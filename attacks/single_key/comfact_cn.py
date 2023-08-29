@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 
 from attacks.abstract_attack import AbstractAttack
-from lib.rsalibnum import gcd
+from lib.number_theory import gcd
 from lib.utils import s2n
 from lib.keys_wrapper import PrivateKey
-from lib.utils import timeout, TimeoutError
 
 
 class Attack(AbstractAttack):
@@ -32,13 +31,9 @@ class Attack(AbstractAttack):
     def attack(self, publickey, cipher=[], progress=True):
         """Try an attack where the public key has a common factor with the ciphertext - sourcekris"""
         if cipher is not None:
-            try:
-                with timeout(self.timeout):
-                    return self.comfact(cipher, publickey)
-            except TimeoutError:
-                return (None, None)
-        return (None, None)
+            return self.comfact(cipher, publickey)
+        return None, None
 
     def test(self):
-        """ FIXME: Implment testcase """
+        """FIXME: Implment testcase"""
         raise NotImplementedError

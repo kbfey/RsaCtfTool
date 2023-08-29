@@ -4,8 +4,22 @@
 from attacks.abstract_attack import AbstractAttack
 from lib.keys_wrapper import PrivateKey
 from lib.exceptions import FactorizationError
-from lib.utils import timeout, TimeoutError
-from lib.rsalibnum import isqrt
+from lib.number_theory import isqrt, is_square, isqrt_rem, is_congruent
+
+
+def fermat(n):
+    if is_congruent(n, 2, 4):
+        raise FactorizationError
+    a, rem = isqrt_rem(n)
+    b2 = -rem
+    c0 = (a << 1) + 1
+    c = c0
+    while not is_square(b2):
+        b2 += c
+        c += 2
+    a = (c - 1) >> 1
+    b = isqrt(b2)
+    return a - b, a + b
 
 
 class Attack(AbstractAttack):
@@ -13,31 +27,14 @@ class Attack(AbstractAttack):
         super().__init__(timeout)
         self.speed = AbstractAttack.speed_enum["medium"]
 
-    # Source - http://stackoverflow.com/a/20465181
-
-    def fermat(self, n):
-        """Fermat attack"""
-        a = b = isqrt(n)
-        b2 = pow(a, 2) - n
-        while pow(b, 2) != b2:
-            a += 1
-            b2 = pow(a, 2) - n
-            b = isqrt(b2)
-        p, q = (a + b), (a - b)
-        assert n == p * q
-        return p, q
-
     def attack(self, publickey, cipher=[], progress=True):
         """Run fermat attack with a timeout"""
         try:
-            with timeout(seconds=self.timeout):
-                try:
-                    publickey.p, publickey.q = self.fermat(publickey.n)
-                except TimeoutError:
-                    return (None, None)
+            publickey.p, publickey.q = fermat(publickey.n)
 
         except FactorizationError:
-            return (None, None)
+            self.logger.error("N should not be a 4k+2 number...")
+            return None, None
 
         if publickey.p is not None and publickey.q is not None:
             try:
@@ -47,11 +44,11 @@ class Attack(AbstractAttack):
                     q=int(publickey.q),
                     e=int(publickey.e),
                 )
-                return (priv_key, None)
+                return priv_key, None
             except ValueError:
-                return (None, None)
+                return None, None
 
-        return (None, None)
+        return None, None
 
     def test(self):
         from lib.keys_wrapper import PublicKey

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import time
 import logging
 import importlib
 from lib.keys_wrapper import PublicKey, PrivateKey
 from lib.exceptions import FactorizationError
 from lib.utils import print_results
 from lib.fdb import send2fdb
-from Crypto.Util.number import bytes_to_long, long_to_bytes
+from lib.crypto_wrapper import bytes_to_long, long_to_bytes
 import inspect
-from lib.rsalibnum import is_prime, isqrt, gcd
+from lib.number_theory import is_prime, isqrt, gcd
+import traceback
 
 
 class RSAAttack(object):
@@ -127,7 +129,7 @@ class RSAAttack(object):
                 )
                 ok = False
             i = isqrt(publickey.n)
-            if publickey.n == (i ** 2):
+            if publickey.n == (i**2):
                 self.logger.error(
                     "[!] Public key: %s modulus should not be a perfect square."
                     % publickey.filename
@@ -188,7 +190,7 @@ class RSAAttack(object):
         self.implemented_attacks.sort(key=lambda x: x.speed, reverse=True)
 
     def priv_key_send2fdb(self):
-        if self.args.sendtofdb == True:
+        if self.args.sendtofdb:
             if self.priv_key is not None:
                 if type(self.priv_key) is PrivateKey:
                     send2fdb(self.priv_key.n, [self.priv_key.p, self.priv_key.q])
@@ -207,7 +209,7 @@ class RSAAttack(object):
         for publickey in publickeys:
             try:
                 with open(publickey, "rb") as pubkey_fd:
-                    publickeys_obj.append(PublicKey(pubkey_fd.read(), publickey))
+                    publickeys_obj.append(PublicKey(pubkey_fd.read(), filename=publickey))
             except Exception:
                 self.logger.error("[*] Key format not supported : %s." % publickey)
                 continue
@@ -254,14 +256,22 @@ class RSAAttack(object):
     def attack_single_key(self, publickey, attacks_list=[], test=False):
         """Run attacks on single keys"""
 
-        if len(attacks_list) == 0:
+        c = 0  # Attack counter
+        l = len(attacks_list)
+        if l == 0:
             self.args.attack = "all"
 
         self.load_attacks(attacks_list)
+        T = []
         if test:
+            self.load_attacks(attacks_list, multikeys=True)
             for attack in self.implemented_attacks:
+                t0 = time.time()
+                c += 1
                 if attack.can_run():
-                    self.logger.info("[*] Testing %s" % attack.get_name())
+                    self.logger.info(
+                        "[*] %d of %d, Testing: %s" % (c, l, attack.get_name())
+                    )
                     try:
                         try:
                             if attack.test():
@@ -272,55 +282,110 @@ class RSAAttack(object):
                             self.logger.warning("[!] Test not implemented")
                     except Exception:
                         self.logger.error("[!] Failure")
-            exit(0)
-
-        # Read keyfile
-        try:
-            with open(publickey, "rb") as pubkey_fd:
-                self.publickey = PublicKey(pubkey_fd.read(), publickey)
-        except Exception as e:
-            self.logger.error("[*] %s." % e)
+                t1 = time.time()
+                td = t1 - t0
+                T += [td]
+                self.logger.info("[+] Time elapsed: %.4f sec." % round(td, 4))
+            if len(T) > 0:
+                tmin, tmax, tavg = min(T), max(T), sum(T) / len(T)
+                self.logger.info(
+                    "[+] Total time elapsed min,max,avg: %.4f/%.4f/%.4f sec."
+                    % (round(tmin, 4), round(tmax, 4), round(tavg, 4))
+                )
             return
 
-        if self.args.check_publickey:
-            k, ok = self.pre_attack_check(self.publickey)
-            if not ok:
-                return False
-        # Read n/e from publickey file
-        if not self.args.n or not self.args.e:
-            self.args.n = self.publickey.n
-            self.args.e = self.publickey.e
 
+        if isinstance(publickey, str):
+            # Read keyfile
+            try:
+                with open(publickey, "rb") as pubkey_fd:
+                    self.publickey = PublicKey(pubkey_fd.read(), filename = publickey)
+            except Exception as e:
+                self.logger.error("[!] %s." % e)
+                return
+            if self.args.check_publickey:
+                k, ok = self.pre_attack_check(self.publickey)
+                if not ok:
+                    return False
+            # Read n/e from publickey file
+            if not self.args.n or not self.args.e:
+                self.args.n = self.publickey.n
+                self.args.e = self.publickey.e
+        else:
+            self.publickey = publickey
+ 
+        if is_prime(self.publickey.n):
+           self.logger.warning("[!] Your provided modulus is prime:\n%d\nThere is no need to run an integer factorization..." % self.publickey.n)
+           return True
+      
+        if self.args.p is not None and self.args.q is None:
+            self.args.q = self.args.n // self.args.p
+  
+        if self.args.q is not None and self.args.p is None:
+            self.args.p = self.args.n // self.args.q
+
+        self.need_run = not (self.args.p is not None and self.args.q is not None)
+
+        if self.args.show_modulus is not None and self.args.show_modulus == True:
+            print("modulus:", self.args.n)
+        
+
+        T = []
         # Loop through implemented attack methods and conduct attacks
         for attack_module in self.implemented_attacks:
-            self.logger.info(
-                "[*] Performing %s attack on %s."
-                % (attack_module.get_name(), self.publickey.filename)
-            )
+            t0 = time.time()
+            if self.need_run:
+                self.logger.info(
+                    "[*] Performing %s attack on %s."
+                    % (attack_module.get_name(), self.publickey.filename)
+                )
             try:
                 if not attack_module.can_run():
                     continue
 
-                self.priv_key, unciphered = attack_module.attack(
-                    self.publickey, self.cipher
-                )
+                if self.need_run:
+                    self.priv_key, unciphered = attack_module.attack_wrapper(self.publickey, self.cipher)
+                else:
+                    self.logger.warning("[!] No need to factorize since you provided a prime factor...")
+                    unciphered = None
+                    self.priv_key = priv_key = PrivateKey(self.args.p, self.args.q, self.args.e, self.args.n)
+ 
                 if unciphered is not None and unciphered is not []:
                     if isinstance(unciphered, list):
                         self.unciphered = self.unciphered + unciphered
                     else:
                         self.unciphered.append(unciphered)
                 if self.can_stop_tests():
-                    self.logger.info(
-                        f"[*] Attack success with {attack_module.get_name()} method !"
-                    )
+                    if self.need_run:
+                        self.logger.info(
+                            f"[*] Attack success with {attack_module.get_name()} method !"
+                        )
                     break
-            except FactorizationError:
+            except TimeoutError:
                 self.logger.warning("Timeout")
+            except FactorizationError:
+                self.logger.warning("FactorizationError")
             except NotImplementedError:
                 self.logger.warning("[!] This attack module is not implemented yet")
             except KeyboardInterrupt:
                 self.logger.warning("[!] Interrupted")
-
+            except Exception as e:
+                if self.args.withtraceback:
+                    self.logger.error(
+                        "[!] An exception has occurred during the attack. Please check your inputs."
+                    )
+                    self.logger.error("[!] %s" % e)
+                    self.logger.error("[!] %s" % traceback.format_exc())
+            t1 = time.time()
+            td = t1 - t0
+            T += [td]
+            self.logger.info("[+] Time elapsed: %.4f sec." % round(td, 4))
+        if len(T) > 0:
+            tmin, tmax, tavg = min(T), max(T), sum(T) / len(T)
+            self.logger.info(
+                "[+] Total time elapsed min,max,avg: %.4f/%.4f/%.4f sec."
+                % (round(tmin, 4), round(tmax, 4), round(tavg, 4))
+            )
         self.print_results_details(publickey)
         self.priv_key_send2fdb()
         return self.get_boolean_results()

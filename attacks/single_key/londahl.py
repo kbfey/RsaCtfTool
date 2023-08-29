@@ -3,10 +3,46 @@
 
 from attacks.abstract_attack import AbstractAttack
 from tqdm import tqdm
-from lib.rsalibnum import isqrt, invmod, trivial_factorization_with_n_phi
+from lib.number_theory import isqrt, invmod, trivial_factorization_with_n_phi
 from lib.keys_wrapper import PrivateKey
-from lib.utils import timeout, TimeoutError
 from gmpy2 import powmod
+
+
+def close_factor(n, b, progress=True):
+    """
+    source: https://web.archive.org/web/20201031000312/https://grocid.net/2017/09/16/finding-close-prime-factorizations/
+    """
+    # approximate phi
+    phi_approx = n - 2 * isqrt(n) + 1
+    # Create a look-up table
+    # If phi_approx is odd we are going to search for odd i values in the lookup table,
+    # else we are going to search for even i values in the lookup table.
+    look_up = {}
+    z = 1
+    if phi_approx & 1 == 1:
+        for i in tqdm(range(0, b + 1), disable=(not progress)):
+            if i & 1 == 1:
+                look_up[z] = i
+            z <<= 1
+            if z >= n: z -= n
+    else:
+        for i in tqdm(range(0, b + 1), disable=(not progress)):
+            if i & 1 == 0:
+                look_up[z] = i
+            z <<= 1
+            if z >= n: z -= n
+
+    # check the table
+    mu = invmod(powmod(2, phi_approx, n), n)
+    fac = powmod(2, b, n)
+
+    for i in tqdm(range(0, (b * b) + 1), disable=(not progress)):
+        if mu in look_up:
+            phi = phi_approx + look_up[mu] - (i * b)
+            r = trivial_factorization_with_n_phi(n, phi)
+            if r is not None:
+                return r
+        mu = (mu * fac) % n
 
 
 class Attack(AbstractAttack):
@@ -14,51 +50,19 @@ class Attack(AbstractAttack):
         super().__init__(timeout)
         self.speed = AbstractAttack.speed_enum["slow"]
 
-    def close_factor(self, n, b, progress=True):
-        # approximate phi
-        phi_approx = n - 2 * isqrt(n) + 1
-
-        # create a look-up table
-        look_up = {}
-        z = 1
-        for i in tqdm(range(0, b + 1), disable=(not progress)):
-            look_up[z] = i
-            z = (z << 1) % n
-
-        # check the table
-        mu = invmod(powmod(2, phi_approx, n), n)
-        fac = powmod(2, b, n)
-
-        for i in tqdm(range(0, b + 1), disable=(not progress)):
-            if mu in look_up:
-                phi = phi_approx + (look_up[mu] - (i * b))
-                r = trivial_factorization_with_n_phi(n, phi)
-                if r != None:
-                    return r
-            mu = (mu * fac) % n
-        else:
-            return None
-
     def attack(self, publickey, cipher=[], progress=True):
         """Do nothing, used for multi-key attacks that succeeded so we just print the
         private key without spending any time factoring
         """
-        londahl_b = 20000000
-        with timeout(self.timeout):
-            try:
-                factors = self.close_factor(publickey.n, londahl_b, progress)
+        londahl_b = 10000000
+        factors = close_factor(publickey.n, londahl_b, progress)
 
-                if factors is not None:
-                    p, q = factors
-                    priv_key = PrivateKey(
-                        int(p), int(q), int(publickey.e), int(publickey.n)
-                    )
-                    return (priv_key, None)
-                else:
-                    return (None, None)
-            except TimeoutError:
-                return (None, None)
-        return (None, None)
+        if factors is not None:
+            p, q = factors
+            priv_key = PrivateKey(int(p), int(q), int(publickey.e), int(publickey.n))
+            return priv_key, None
+
+        return None, None
 
     def test(self):
         from lib.keys_wrapper import PublicKey

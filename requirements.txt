@@ -1,12 +1,11 @@
 six
-sympy==1.3
-cryptography==3.3.2
+cryptography==39.0.1
 urllib3==1.26.5
 requests==2.25.1
-gmpy==1.17
-gmpy2==2.1.0b5
+gmpy2==2.1.2
 pycryptodome==3.10.4
 tqdm
 z3-solver
 bitarray
-egcd
+psutil==5.9.4
+factordb-pycli

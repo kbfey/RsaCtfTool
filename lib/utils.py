@@ -9,8 +9,9 @@ import logging
 import subprocess
 import contextlib
 import binascii
+import psutil
 from lib.keys_wrapper import PublicKey
-from lib.rsalibnum import invmod
+from lib.number_theory import invmod
 
 # used to track the location of RsaCtfTool
 # allows sage scripts to be launched anywhere in the fs
@@ -51,15 +52,38 @@ def sageworks():
         return False
 
 
+def print_unciphered_res(c, logger):
+    logger.info(f"HEX : 0x{c.hex()}")
+
+    int_big = int.from_bytes(c, "big")
+    int_little = int.from_bytes(c, "little")
+
+    logger.info(f"INT (big endian) : {int_big}")
+    logger.info(f"INT (little endian) : {int_little}")
+    try:
+        c_utf8 = c.decode("utf-8")
+        logger.info(f"utf-8 : { c_utf8 }")
+    except UnicodeDecodeError:
+        pass
+    try:
+        c_utf16 = c.decode("utf-16")
+        logger.info(f"utf-16 : { c_utf16 }")
+    except UnicodeDecodeError:
+        pass
+    logger.info(f"STR : {repr(c)}")
+
+
 def print_results(args, publickey, private_key, uncipher):
     """Print results to output"""
     logger = logging.getLogger("global_logger")
-    if (
-        (args.private and private_key is not None)
-        or (args.dumpkey)
-        or (args.uncipher and uncipher not in [None, []])
+    if any(
+        (
+            (args.private and private_key is not None),
+            args.dumpkey,
+            (args.uncipher and uncipher not in [None, []]),
+        )
     ):
-        if publickey is not None:
+        if publickey is not None and isinstance(publickey, str):
             logger.info("\nResults for %s:" % publickey)
     if private_key is not None:
         if not isinstance(private_key, list):
@@ -137,25 +161,12 @@ def print_results(args, publickey, private_key, uncipher):
                                 logger.error(
                                     "Can't write output file : %s" % args.output
                                 )
+                        print_unciphered_res(c, logger)
+                        if len(c) > 3 and c[0] == 0 and c[1] == 2:
+                            nc = c[c[2:].index(0) + 2 :]
+                            logger.info("\nPKCS#1.5 padding decoded!")
+                            print_unciphered_res(nc, logger)
 
-                        logger.info(f"HEX : 0x{c.hex()}")
-
-                        int_big = int.from_bytes(c, "big")
-                        int_little = int.from_bytes(c, "little")
-
-                        logger.info(f"INT (big endian) : {int_big}")
-                        logger.info(f"INT (little endian) : {int_little}")
-                        try:
-                            c_utf8 = c.decode("utf-8")
-                            logger.info(f"utf-8 : { c_utf8 }")
-                        except UnicodeDecodeError:
-                            pass
-                        try:
-                            c_utf16 = c.decode("utf-16")
-                            logger.info(f"utf-16 : { c_utf16 }")
-                        except UnicodeDecodeError:
-                            pass
-                        logger.info(f"STR : {repr(c)}")
         else:
             logger.critical("Sorry, unciphering failed.")
 
@@ -219,7 +230,7 @@ def n2s(n):
 
 
 def binary_search(L, n):
-    """ Finds item index in O(log2(N)) """
+    """Finds item index in O(log2(N))"""
     left = 0
     right = len(L) - 1
     while left <= right:
@@ -231,3 +242,12 @@ def binary_search(L, n):
         else:
             left = mid + 1
     return -1
+
+
+def terminate_proc_tree(pid, including_parent=False):
+    parent = psutil.Process(pid)
+    children = parent.children(recursive=True)
+    for child in children:
+        child.kill()
+    if including_parent:
+        parent.kill()

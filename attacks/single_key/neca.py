@@ -2,14 +2,11 @@
 # -*- coding: utf-8 -*-
 
 from attacks.abstract_attack import AbstractAttack
-import subprocess
 from lib.keys_wrapper import PrivateKey
-from lib.utils import rootpath
-from lib.rsalibnum import getpubkeysz
+from lib.number_theory import getpubkeysz
 from lib.is_roca_test import is_roca_vulnerable
+from lib.external import neca_factor_driver
 import logging
-import os
-import re
 
 
 class Attack(AbstractAttack):
@@ -22,31 +19,21 @@ class Attack(AbstractAttack):
     def attack(self, publickey, cipher=[], progress=True):
         if is_roca_vulnerable(publickey.n):
             if getpubkeysz(publickey.n) <= 512:
-                necaresult = subprocess.check_output(
-                    ["neca", "%s" % publickey.n],
-                    timeout=self.timeout,
-                    stderr=subprocess.DEVNULL,
-                )
-                necaresult_l = necaresult.decode("utf8").split("\n")
-                if b"FAIL" not in necaresult and b"*" in necaresult:
-                    for line in necaresult_l:
-                        r0 = line.find("N = ")
-                        r1 = line.find(" * ")
-                        if r0 > -1 and r1 > -1:
-                            p, q = list(map(int, line.split("=")[1].split("*")))
-                            priv_key = PrivateKey(
-                                int(p), int(q), int(publickey.e), int(publickey.n)
-                            )
-                            return (priv_key, None)
+                pq = neca_factor_driver(publickey.n, timeout=self.timeout)
+                if pq is not None:
+                    priv_key = PrivateKey(
+                        int(pq[0]), int(pq[1]), int(publickey.e), int(publickey.n)
+                    )
+                    return (priv_key, None)
                 else:
                     return (None, None)
             else:
-                self.logger.info(
+                self.logger.error(
                     "[-] This key is roca but > 512 bits, try with roca attack..."
                 )
                 return (None, None)
         else:
-            self.logger.info("[-] This key is not roca, skiping test...")
+            self.logger.error("[-] This key is not roca, skiping test...")
             return (None, None)
 
     def test(self):
